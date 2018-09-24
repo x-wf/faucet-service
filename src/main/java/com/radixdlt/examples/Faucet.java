@@ -1,19 +1,18 @@
 package com.radixdlt.examples;
 
-import com.radixdlt.client.assets.Asset;
+import com.radixdlt.client.application.RadixApplicationAPI;
+import com.radixdlt.client.application.identity.RadixIdentities;
+import com.radixdlt.client.application.identity.RadixIdentity;
 import com.radixdlt.client.core.Bootstrap;
 import com.radixdlt.client.core.RadixUniverse;
 import com.radixdlt.client.core.address.RadixAddress;
-import com.radixdlt.client.core.identity.EncryptedRadixIdentity;
-import com.radixdlt.client.core.identity.RadixIdentity;
-import com.radixdlt.client.core.identity.SimpleRadixIdentity;
 import com.radixdlt.client.core.network.AtomSubmissionUpdate;
 import com.radixdlt.client.core.network.AtomSubmissionUpdate.AtomSubmissionState;
-import com.radixdlt.client.messaging.RadixMessaging;
-import com.radixdlt.client.wallet.RadixWallet;
+import com.radixdlt.client.dapps.messaging.RadixMessaging;
+import com.radixdlt.client.dapps.wallet.RadixWallet;
 import io.reactivex.Completable;
 import io.reactivex.Single;
-import java.io.IOException;
+import java.math.BigDecimal;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -27,18 +26,19 @@ public class Faucet {
 	 */
 	private final static long DELAY = 1000 * 60 * 10; //10min
 
-	/**
-	 * The RadixIdentity of this faucet, an object which keeps the Chatbot's private key
-	 */
-	private final RadixIdentity radixIdentity;
+	private final RadixApplicationAPI api;
+	private final RadixMessaging messaging;
+	private final RadixWallet wallet;
 
 	/**
 	 * A faucet created on the default universe
 	 *
-	 * @param radixIdentity identity to load faucet off of
+	 * @param api
 	 */
-	private Faucet(RadixIdentity radixIdentity) {
-		this.radixIdentity = radixIdentity;
+	private Faucet(RadixApplicationAPI api) {
+		this.api = api;
+		this.messaging = new RadixMessaging(api);
+		this.wallet = new RadixWallet(api);
 	}
 
 	/**
@@ -48,7 +48,8 @@ public class Faucet {
 	 * @return completable whether transfer was successful or not
 	 */
 	private Completable leakFaucet(RadixAddress to) {
-		return RadixWallet.getInstance().transferXRD(10 * Asset.XRD.getSubUnits(), radixIdentity, to)
+		return this.wallet.send(new BigDecimal(10), to)
+			.toObservable()
 			.doOnNext(state -> System.out.println("Transaction: " + state))
 			.filter(AtomSubmissionUpdate::isComplete)
 			.firstOrError()
@@ -65,39 +66,36 @@ public class Faucet {
 	 * @return state of the message atom submission
 	 */
 	private Completable sendReply(String message, RadixAddress to) {
-		return RadixMessaging.getInstance().sendMessage(message, radixIdentity, to)
-			.doOnNext(state -> System.out.println("Message: " + state))
-			.filter(AtomSubmissionUpdate::isComplete)
-			.firstOrError()
-			.flatMapCompletable(update -> update.getState() == AtomSubmissionState.STORED ?
-				Completable.complete() : Completable.error(new RuntimeException(update.toString()))
-			);
+		return messaging.sendMessage(message, to)
+			.toCompletable()
+			.doOnComplete(() -> System.out.println("Sent reply"));
 	}
 
 	/**
 	 * Start and run the faucet service
 	 */
 	public void run() {
-		final RadixAddress sourceAddress = RadixUniverse.getInstance().getAddressFrom(radixIdentity.getPublicKey());
+		final RadixAddress sourceAddress = api.getMyAddress();
 
 		System.out.println("Faucet Address: " + sourceAddress);
 
 		// Print out current balance of faucet
-		RadixWallet.getInstance().getSubUnitBalance(sourceAddress, Asset.XRD)
+		wallet.getBalance()
 			.subscribe(
-				balance -> System.out.println("Faucet Balance: " + ((double)balance) / Asset.XRD.getSubUnits()),
+				balance -> System.out.println("Faucet Balance: " + balance),
 				Throwable::printStackTrace
 			)
 		;
 
+		api.getData(api.getMyAddress()).subscribe(System.out::println, Throwable::printStackTrace);
+
 		// Flow Logic
 		// Listen to any recent messages, send 10 XRD to the sender and then send a confirmation whether it succeeded or not
 		// NOTE: this is neither idempotent nor atomic!
-		RadixMessaging.getInstance()
-			.getAllMessagesDecryptedAndGroupedByParticipants(radixIdentity)
+		messaging
+			.getAllMessagesGroupedByParticipants()
 			.subscribe(observableByAddress -> {
 				final RadixAddress from = observableByAddress.getKey();
-
 				final RateLimiter rateLimiter = new RateLimiter(DELAY);
 
 				observableByAddress
@@ -155,15 +153,20 @@ public class Faucet {
 			System.exit(-1);
 		}
 
-		RadixUniverse.bootstrap(Bootstrap.valueOf(args[0].toUpperCase()));
+		String universeString = args[0];
+		String keyFile = args[1];
+		String password = args[2];
+
+		RadixUniverse.bootstrap(Bootstrap.valueOf(universeString.toUpperCase()));
 
 		RadixUniverse.getInstance()
 			.getNetwork()
 			.getStatusUpdates()
 			.subscribe(System.out::println);
 
-		final RadixIdentity faucetIdentity = new EncryptedRadixIdentity(args[2], args[1]);
-		Faucet faucet = new Faucet(faucetIdentity);
+		final RadixIdentity faucetIdentity = RadixIdentities.loadOrCreateEncryptedFile(keyFile, password);
+		final RadixApplicationAPI api = RadixApplicationAPI.create(faucetIdentity);
+		Faucet faucet = new Faucet(api);
 		faucet.run();
 	}
 }
