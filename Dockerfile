@@ -6,7 +6,8 @@ RUN apt-get -y update && \
     apt-get clean && \
     rm -rf rm -rf /var/lib/apt/lists/* /var/tmp/* /tmp/*
 
-ADD build/distributions/faucet-service-1.0-SNAPSHOT.tar /tmp
+ADD build/distributions/faucet-service-*.tar /tmp
+RUN mv /tmp/faucet-service-* /tmp/faucet-service
 
-WORKDIR /tmp/faucet-service-1.0-SNAPSHOT/bin
+WORKDIR /tmp/faucet-service/bin
 CMD ["/bin/bash", "faucet-service", "highgarden", "faucet.key", "password123"]
