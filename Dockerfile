@@ -10,4 +10,4 @@ ADD build/distributions/faucet-service-*.tar /opt
 RUN mv /opt/faucet-service-* /opt/faucet-service
 
 WORKDIR /opt/faucet-service
-CMD ["./bin/faucet-service", "highgarden", "faucet.key", "password123"]
+ENTRYPOINT ["./bin/faucet-service"]
