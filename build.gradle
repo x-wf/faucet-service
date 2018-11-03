@@ -16,6 +16,6 @@ repositories {
 
 dependencies {
     // https://github.com/jitpack/jitpack.io/issues/3375
-    implementation 'com.radixdlt:radixdlt-java:4978ee1b9c3d7b37799498af71c54977b4440f27'
+    implementation 'com.radixdlt:radixdlt-java:0.11.6'
     testCompile group: 'junit', name: 'junit', version: '4.12'
 }
