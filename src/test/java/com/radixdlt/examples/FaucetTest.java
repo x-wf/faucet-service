@@ -5,8 +5,8 @@ import com.radixdlt.client.application.identity.RadixIdentities;
 import com.radixdlt.client.application.identity.RadixIdentity;
 import com.radixdlt.client.application.translate.data.DecryptedMessage;
 import com.radixdlt.client.application.translate.data.DecryptedMessage.EncryptionState;
-import com.radixdlt.client.application.translate.tokenclasses.CreateTokenAction.TokenSupplyType;
-import com.radixdlt.client.application.translate.tokens.TokenTypeReference;
+import com.radixdlt.client.application.translate.tokens.CreateTokenAction.TokenSupplyType;
+import com.radixdlt.client.application.translate.tokens.TokenDefinitionReference;
 import com.radixdlt.client.core.Bootstrap;
 import com.radixdlt.client.core.RadixUniverse;
 import io.reactivex.functions.Predicate;
@@ -19,28 +19,28 @@ import org.radix.utils.UInt256;
 public class FaucetTest {
 	@Test
 	public void test() throws Exception {
-		RadixUniverse.bootstrap(Bootstrap.BETANET);
+		RadixUniverse.create(Bootstrap.LOCALHOST);
 
 		final RadixIdentity faucetIdentity = RadixIdentities.createNew();
-		final RadixApplicationAPI faucetApi = RadixApplicationAPI.create(faucetIdentity);
+		final RadixApplicationAPI faucetApi = RadixApplicationAPI.create(Bootstrap.LOCALHOST, faucetIdentity);
 		faucetApi.createToken(
 			"Faucet Token",
 			"FCT",
 			"Faucet Token",
-			TokenTypeReference.unitsToSubunits(new BigDecimal(1000000)),
-			UInt256.ONE,
+			BigDecimal.valueOf(1000000),
+			BigDecimal.ONE,
 			TokenSupplyType.MUTABLE
 		)
 		.toCompletable()
 		.blockingAwait();
 
-		final TokenTypeReference tokenRef = TokenTypeReference.of(faucetApi.getMyAddress(), "FCT");
+		final TokenDefinitionReference tokenRef = TokenDefinitionReference.of(faucetApi.getMyAddress(), "FCT");
 		final Faucet faucet = new Faucet(faucetApi, tokenRef);
 		faucet.run();
 
 		for (int i = 0; i < 10; i++) {
 			final RadixIdentity userIdentity = RadixIdentities.createNew();
-			final RadixApplicationAPI userApi = RadixApplicationAPI.create(userIdentity);
+			final RadixApplicationAPI userApi = RadixApplicationAPI.create(Bootstrap.LOCALHOST, userIdentity);
 			final String message = "Hello " + i;
 			userApi.sendMessage(message.getBytes(), false, faucetApi.getMyAddress())
 				.toCompletable()

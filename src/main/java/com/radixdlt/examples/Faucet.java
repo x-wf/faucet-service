@@ -3,7 +3,7 @@ package com.radixdlt.examples;
 import com.radixdlt.client.application.RadixApplicationAPI;
 import com.radixdlt.client.application.identity.RadixIdentities;
 import com.radixdlt.client.application.identity.RadixIdentity;
-import com.radixdlt.client.application.translate.tokens.TokenTypeReference;
+import com.radixdlt.client.application.translate.tokens.TokenDefinitionReference;
 import com.radixdlt.client.core.Bootstrap;
 import com.radixdlt.client.core.RadixUniverse;
 import com.radixdlt.client.atommodel.accounts.RadixAddress;
@@ -28,16 +28,16 @@ public class Faucet {
 	private final static long DELAY = 1000 * 60 * 10; //10min
 
 	private final RadixApplicationAPI api;
-	private final TokenTypeReference tokenTypeReference;
+	private final TokenDefinitionReference tokenDefinitionReference;
 
 	/**
 	 * A faucet created on the default universe
 	 *
 	 * @param api
 	 */
-	Faucet(RadixApplicationAPI api, TokenTypeReference tokenTypeReference) {
+	Faucet(RadixApplicationAPI api, TokenDefinitionReference tokenDefinitionReference) {
 		this.api = Objects.requireNonNull(api);
-		this.tokenTypeReference = Objects.requireNonNull(tokenTypeReference);
+		this.tokenDefinitionReference = Objects.requireNonNull(tokenDefinitionReference);
 	}
 
 	/**
@@ -47,7 +47,7 @@ public class Faucet {
 	 * @return completable whether transfer was successful or not
 	 */
 	private Completable leakFaucet(RadixAddress to) {
-		return api.sendTokens(to, new BigDecimal(10), tokenTypeReference)
+		return api.transferTokens(to, new BigDecimal(10), tokenDefinitionReference)
 			.toObservable()
 			.doOnNext(state -> System.out.println("Transaction: " + state))
 			.ofType(SubmitAtomResultAction.class)
@@ -79,7 +79,7 @@ public class Faucet {
 		System.out.println("Faucet Address: " + sourceAddress);
 
 		// Print out current balance of faucet
-		api.getMyBalance(tokenTypeReference)
+		api.getMyBalance(tokenDefinitionReference)
 			.subscribe(
 				balance -> System.out.println("Faucet Balance: " + balance),
 				Throwable::printStackTrace
@@ -104,7 +104,7 @@ public class Faucet {
 						if (rateLimiter.check()) {
 							return this.leakFaucet(from)
 								.doOnComplete(rateLimiter::reset)
-								.andThen(Single.just("Sent you 10 " + tokenTypeReference.getSymbol() + "!"))
+								.andThen(Single.just("Sent you 10 " + tokenDefinitionReference.getSymbol() + "!"))
 								.onErrorReturn(throwable -> "Couldn't send you any (Reason: " + throwable.getMessage() + ")");
 						} else {
 							return Single.just(
@@ -147,7 +147,7 @@ public class Faucet {
 
 	public static void main(String[] args) throws Exception {
 		if (args.length < 3) {
-			System.out.println("Usage: java com.radixdlt.client.services.Faucet <highgarden|sunstone|winterfell|winterfell_local> <keyfile> <password>");
+			System.out.println("Usage: java com.radixdlt.client.services.Faucet <sunstone|alphanet2|betanet|...> <keyfile> <password>");
 			System.exit(-1);
 		}
 
@@ -155,10 +155,11 @@ public class Faucet {
 		String keyFile = args[1];
 		String password = args[2];
 
-		RadixUniverse.bootstrap(Bootstrap.valueOf(universeString.toUpperCase()));
+		Bootstrap bootstrap = Bootstrap.valueOf(universeString.toUpperCase());
+		RadixUniverse.create(bootstrap);
 
 		final RadixIdentity faucetIdentity = RadixIdentities.loadOrCreateEncryptedFile(keyFile, password);
-		final RadixApplicationAPI api = RadixApplicationAPI.create(faucetIdentity);
+		final RadixApplicationAPI api = RadixApplicationAPI.create(bootstrap, faucetIdentity);
 		Faucet faucet = new Faucet(api, api.getNativeTokenRef());
 		faucet.run();
 	}
