@@ -1,19 +1,23 @@
 package com.radixdlt.examples;
 
 import com.radixdlt.client.application.RadixApplicationAPI;
+import com.radixdlt.client.application.RadixApplicationAPI.Result;
+import com.radixdlt.client.application.RadixApplicationAPI.Transaction;
 import com.radixdlt.client.application.identity.RadixIdentities;
 import com.radixdlt.client.application.identity.RadixIdentity;
-import com.radixdlt.client.application.translate.tokens.TokenDefinitionReference;
-import com.radixdlt.client.core.Bootstrap;
-import com.radixdlt.client.core.RadixUniverse;
+import com.radixdlt.client.application.translate.data.DecryptedMessage;
+import com.radixdlt.client.application.translate.data.SendMessageAction;
+import com.radixdlt.client.application.translate.tokens.TransferTokensAction;
+import com.radixdlt.client.application.translate.unique.PutUniqueIdAction;
 import com.radixdlt.client.atommodel.accounts.RadixAddress;
-import com.radixdlt.client.core.network.actions.SubmitAtomResultAction;
-import com.radixdlt.client.core.network.actions.SubmitAtomResultAction.SubmitAtomResultActionType;
-import io.reactivex.Completable;
-import io.reactivex.Single;
+import com.radixdlt.client.core.Bootstrap;
+import com.radixdlt.client.core.atoms.particles.RRI;
 import java.math.BigDecimal;
+import java.util.Arrays;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 import org.radix.utils.RadixConstants;
 
 /**
@@ -22,100 +26,109 @@ import org.radix.utils.RadixConstants;
  */
 public class Faucet {
 
+	private static final String UNIQUE_MESSAGE_PREFIX = "faucet-msg-";
+	private static final String UNIQUE_SEND_TOKENS_PREFIX = "faucet-tx-";
+
 	/**
 	 * The amount of time a requestor must wait to make subsequent token requests
 	 */
-	private final static long DELAY = 1000 * 60 * 10; //10min
+	private static final long DELAY = 1000 * 60 * 10; //10min
 
 	private final RadixApplicationAPI api;
-	private final TokenDefinitionReference tokenDefinitionReference;
 
-	/**
-	 * A faucet created on the default universe
-	 *
-	 * @param api
-	 */
-	Faucet(RadixApplicationAPI api, TokenDefinitionReference tokenDefinitionReference) {
+	private final RRI tokenRRI;
+
+	private final BigDecimal amountToSend;
+
+	private Faucet(RadixApplicationAPI api, RRI tokenRRI, BigDecimal amountToSend) {
+		this.tokenRRI = Objects.requireNonNull(tokenRRI);
 		this.api = Objects.requireNonNull(api);
-		this.tokenDefinitionReference = Objects.requireNonNull(tokenDefinitionReference);
+		this.amountToSend = Objects.requireNonNull(amountToSend);
 	}
 
 	/**
-	 * Send XRD from this account to an address
+	 * Send tokens from this account to an address
 	 *
-	 * @param to the address to send to
+	 * @param msg the msg received
 	 * @return completable whether transfer was successful or not
 	 */
-	private Completable leakFaucet(RadixAddress to) {
-		return api.transferTokens(to, new BigDecimal(10), tokenDefinitionReference)
-			.toObservable()
-			.doOnNext(state -> System.out.println("Transaction: " + state))
-			.ofType(SubmitAtomResultAction.class)
-			.firstOrError()
-			.flatMapCompletable(update -> update.getType() == SubmitAtomResultActionType.STORED ?
-				Completable.complete() : Completable.error(new RuntimeException(update.toString()))
-			);
-	}
+	private void leakFaucet(RateLimiter rateLimiter, DecryptedMessage msg) {
+		RRI msgMutexAcquire = RRI.of(api.getAddress(), UNIQUE_MESSAGE_PREFIX + msg.getActionId());
+		RRI transferMutexAcquire = RRI.of(api.getAddress(), UNIQUE_SEND_TOKENS_PREFIX + msg.getActionId());
 
-	/**
-	 * Actually send a reply message to the requestor through the Universe
-	 *
-	 * @param message message to send back
-	 * @param to address to send message back to
-	 * @return state of the message atom submission
-	 */
-	private Completable sendReply(String message, RadixAddress to) {
-		return api.sendMessage(message.getBytes(RadixConstants.STANDARD_CHARSET), true, to)
-			.toCompletable()
-			.doOnComplete(() -> System.out.println("Sent reply"));
+		if (!rateLimiter.check()) {
+			Transaction hastyMsg = this.api.createTransaction();
+			hastyMsg.stage(SendMessageAction.create(
+				api.getAddress(),
+				msg.getFrom(),
+				("Don't be hasty! You can only make one request every 10 minutes. " + rateLimiter.getTimeLeftString() + " left.").getBytes(RadixConstants.STANDARD_CHARSET),
+				true
+			));
+			hastyMsg.stage(PutUniqueIdAction.create(msgMutexAcquire));
+			hastyMsg.stage(PutUniqueIdAction.create(transferMutexAcquire));
+			hastyMsg.commitAndPush().toObservable().subscribe(System.out::println, Throwable::printStackTrace);
+			return;
+		}
+
+		Transaction transaction = this.api.createTransaction();
+		transaction.stage(TransferTokensAction.create(tokenRRI, api.getAddress(), msg.getFrom(), amountToSend));
+		transaction.stage(PutUniqueIdAction.create(transferMutexAcquire));
+		Result result = transaction.commitAndPush();
+		result.toObservable().subscribe(
+			s -> System.out.println("Send tokens for " + msg.getActionId() + ": " + s),
+			e -> System.out.println("Could not send tokens: " + e)
+		);
+		result.toCompletable().subscribe(
+			() -> {
+				Transaction sentRadsMsg = this.api.createTransaction();
+				byte[] msgBytes = ("Sent you " + amountToSend + " " + tokenRRI.getName()).getBytes(RadixConstants.STANDARD_CHARSET);
+				sentRadsMsg.stage(SendMessageAction.create(api.getAddress(), msg.getFrom(), msgBytes, true));
+				sentRadsMsg.stage(PutUniqueIdAction.create(msgMutexAcquire));
+				sentRadsMsg.commitAndPush().toObservable().subscribe(System.out::println, Throwable::printStackTrace);
+			},
+			e -> {
+				Transaction sentRadsMsg = this.api.createTransaction();
+				byte[] msgBytes = ("Couldn't send you any (Reason: " + e.getMessage() + ")").getBytes(RadixConstants.STANDARD_CHARSET);
+				sentRadsMsg.stage(SendMessageAction.create(api.getAddress(), msg.getFrom(), msgBytes, true));
+				sentRadsMsg.stage(PutUniqueIdAction.create(msgMutexAcquire));
+				sentRadsMsg.commitAndPush().toObservable().subscribe(System.out::println, Throwable::printStackTrace);
+			}
+		);
 	}
 
 	/**
 	 * Start and run the faucet service
 	 */
 	public void run() {
-		final RadixAddress sourceAddress = api.getMyAddress();
+		api.pull();
 
+		final RadixAddress sourceAddress = api.getAddress();
+
+		System.out.println("Faucet Token: " + tokenRRI);
 		System.out.println("Faucet Address: " + sourceAddress);
 
 		// Print out current balance of faucet
-		api.getMyBalance(tokenDefinitionReference)
+		api.observeBalance(tokenRRI)
 			.subscribe(
 				balance -> System.out.println("Faucet Balance: " + balance),
 				Throwable::printStackTrace
 			);
 
-		api.getMessages().subscribe(System.out::println, Throwable::printStackTrace);
-
-		// Flow Logic
-		// Listen to any recent messages, send 10 XRD to the sender and then send a confirmation whether it succeeded or not
-		// NOTE: this is neither idempotent nor atomic!
-		api.getMessages()
-			.groupBy(msg -> msg.getFrom().getPublicKey().equals(api.getMyPublicKey()) ? msg.getTo() : msg.getFrom())
+		api.observeMessages()
+			.groupBy(DecryptedMessage::getFrom)
 			.subscribe(observableByAddress -> {
-				final RadixAddress from = observableByAddress.getKey();
 				final RateLimiter rateLimiter = new RateLimiter(DELAY);
 
 				observableByAddress
 					.doOnNext(System.out::println) // Print out all messages
 					.filter(message -> !message.getFrom().equals(sourceAddress)) // Don't send ourselves money
-					.filter(message -> Math.abs(message.getTimestamp() - System.currentTimeMillis()) < 60000) // Only deal with recent messages
-					.flatMapSingle(message -> {
-						if (rateLimiter.check()) {
-							return this.leakFaucet(from)
-								.doOnComplete(rateLimiter::reset)
-								.andThen(Single.just("Sent you 10 " + tokenDefinitionReference.getSymbol() + "!"))
-								.onErrorReturn(throwable -> "Couldn't send you any (Reason: " + throwable.getMessage() + ")");
-						} else {
-							return Single.just(
-								"Don't be hasty! You can only make one request every 10 minutes. "
-								+ rateLimiter.getTimeLeftString() + " left."
-							);
-						}
-					}, true)
-					.flatMapCompletable(msg -> this.sendReply(msg, from))
-					.subscribe();
+					.subscribe(message -> this.leakFaucet(rateLimiter, message), Throwable::printStackTrace);
 			});
+
+		try {
+			TimeUnit.SECONDS.sleep(5);
+		} catch (InterruptedException e) {
+		}
 	}
 
 	/**
@@ -146,21 +159,22 @@ public class Faucet {
 	}
 
 	public static void main(String[] args) throws Exception {
-		if (args.length < 3) {
-			System.out.println("Usage: java com.radixdlt.client.services.Faucet <sunstone|alphanet2|betanet|...> <keyfile> <password>");
+		if (args.length < 4) {
+			String universeOptions = String.join("|", Arrays.stream(Bootstrap.values()).map(b -> b.name()).collect(Collectors.toList()));
+			System.out.println("Usage: java com.radixdlt.client.services.Faucet <" + universeOptions + "> <tokenRRI> <keyfile> <password>");
 			System.exit(-1);
 		}
 
 		String universeString = args[0];
-		String keyFile = args[1];
-		String password = args[2];
-
-		Bootstrap bootstrap = Bootstrap.valueOf(universeString.toUpperCase());
-		RadixUniverse.create(bootstrap);
+		String tokenRRIString = args[1];
+		String keyFile = args[2];
+		String password = args[3];
 
 		final RadixIdentity faucetIdentity = RadixIdentities.loadOrCreateEncryptedFile(keyFile, password);
-		final RadixApplicationAPI api = RadixApplicationAPI.create(bootstrap, faucetIdentity);
-		Faucet faucet = new Faucet(api, api.getNativeTokenRef());
+		final RadixApplicationAPI api = RadixApplicationAPI.create(Bootstrap.valueOf(universeString), faucetIdentity);
+		final RRI tokenRRI = RRI.fromString(tokenRRIString);
+
+		Faucet faucet = new Faucet(api, tokenRRI, BigDecimal.valueOf(10.0));
 		faucet.run();
 	}
 }
