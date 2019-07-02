@@ -29,21 +29,16 @@ public class Faucet {
 	private static final String UNIQUE_MESSAGE_PREFIX = "faucet-msg-";
 	private static final String UNIQUE_SEND_TOKENS_PREFIX = "faucet-tx-";
 
-	/**
-	 * The amount of time a requestor must wait to make subsequent token requests
-	 */
-	private static final long DELAY = 1000 * 60 * 10; //10min
-
 	private final RadixApplicationAPI api;
-
 	private final RRI tokenRRI;
-
 	private final BigDecimal amountToSend;
+	private final long delay;
 
-	private Faucet(RadixApplicationAPI api, RRI tokenRRI, BigDecimal amountToSend) {
+	private Faucet(RadixApplicationAPI api, RRI tokenRRI, BigDecimal amountToSend, long delay) {
 		this.tokenRRI = Objects.requireNonNull(tokenRRI);
 		this.api = Objects.requireNonNull(api);
 		this.amountToSend = Objects.requireNonNull(amountToSend);
+		this.delay = delay;
 	}
 
 	/**
@@ -61,7 +56,8 @@ public class Faucet {
 			hastyMsg.stage(SendMessageAction.create(
 				api.getAddress(),
 				msg.getFrom(),
-				("Don't be hasty! You can only make one request every 10 minutes. " + rateLimiter.getTimeLeftString() + " left.").getBytes(RadixConstants.STANDARD_CHARSET),
+				("Don't be hasty! Time remaining before new request accepted: " + rateLimiter.getTimeLeftString())
+					.getBytes(RadixConstants.STANDARD_CHARSET),
 				true
 			));
 			hastyMsg.stage(PutUniqueIdAction.create(msgMutexAcquire));
@@ -117,7 +113,7 @@ public class Faucet {
 		api.observeMessages()
 			.groupBy(DecryptedMessage::getFrom)
 			.subscribe(observableByAddress -> {
-				final RateLimiter rateLimiter = new RateLimiter(DELAY);
+				final RateLimiter rateLimiter = new RateLimiter(delay);
 
 				observableByAddress
 					.doOnNext(System.out::println) // Print out all messages
@@ -144,8 +140,8 @@ public class Faucet {
 
 		String getTimeLeftString() {
 			long timeSince = System.currentTimeMillis() - lastTimestamp.get();
-			long secondsTimeLeft = ((DELAY - timeSince) / 1000) % 60;
-			long minutesTimeLeft = ((DELAY - timeSince) / 1000) / 60;
+			long secondsTimeLeft = ((this.millis - timeSince) / 1000) % 60;
+			long minutesTimeLeft = ((this.millis - timeSince) / 1000) / 60;
 			return minutesTimeLeft + " minutes and " + secondsTimeLeft + " seconds";
 		}
 
@@ -160,7 +156,7 @@ public class Faucet {
 
 	public static void main(String[] args) throws Exception {
 		if (args.length < 4) {
-			String universeOptions = String.join("|", Arrays.stream(Bootstrap.values()).map(b -> b.name()).collect(Collectors.toList()));
+			String universeOptions = String.join("|", Arrays.stream(Bootstrap.values()).map(Bootstrap::name).collect(Collectors.toList()));
 			System.out.println("Usage: java com.radixdlt.client.services.Faucet <" + universeOptions + "> <tokenRRI> <keyfile> <password>");
 			System.exit(-1);
 		}
@@ -174,7 +170,8 @@ public class Faucet {
 		final RadixApplicationAPI api = RadixApplicationAPI.create(Bootstrap.valueOf(universeString), faucetIdentity);
 		final RRI tokenRRI = RRI.fromString(tokenRRIString);
 
-		Faucet faucet = new Faucet(api, tokenRRI, BigDecimal.valueOf(10.0));
+		final long delay = 1000 * 60 * 10; //10min
+		Faucet faucet = new Faucet(api, tokenRRI, BigDecimal.valueOf(10.0), delay);
 		faucet.run();
 	}
 }
